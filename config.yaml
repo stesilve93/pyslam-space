@@ -2,11 +2,12 @@ DATASET:
   # select your dataset (decomment only one of the following lines) 
   #type: EUROC_DATASET  
   #type: KITTI_DATASET
+  type: RVD_DATASET
   #type: TUM_DATASET
   #type: ICL_NUIM_DATASET
   #type: REPLICA_DATASET
   #type: TARTANAIR_DATASET
-  type: VIDEO_DATASET
+  #type: VIDEO_DATASET
   #type: SCANNET_DATASET
   #type: ROS1BAG_DATASET
   #type: ROS2BAG_DATASET  
@@ -28,6 +29,28 @@ KITTI_DATASET:
   is_color: True # do you have the color images for the kitti dataset? (image2 and image3 folders)
   groundtruth_file: auto
 
+RVD_DATASET:
+  type: rvd
+  sensor_type: mono # Here, 'sensor_type' can be 'mono' or 'rgbd'
+  base_path: /home/ssilvestrini/Documents/github/SpaceSLAM/Examples/
+  #
+  name: RGB-D/trajectory_steady
+  settings: settings/RVD.yaml # do not forget to correctly set the corresponding camera settings file    
+  #
+  # name: rgbd_dataset_freiburg1_xyz 
+  # settings: settings/TUM1.yaml # do not forget to correctly set the corresponding camera settings file
+  #
+  #name: rgbd_dataset_freiburg2_desk
+  #settings: settings/TUM2.yaml # do not forget to correctly set the corresponding camera settings file
+  #
+  #name: rgbd_dataset_freiburg1_desk
+  #settings: settings/TUM1.yaml # do not forget to correctly set the corresponding camera settings file  
+  #
+  #name: rgbd_dataset_freiburg1_room  # do not use this for mono, there are some in-place rotations during exploratory phases
+  #settings: settings/TUM1.yaml # do not forget to set the corresponding camera settings file 
+  #
+  associations: database_info/rgb.txt
+  groundtruth_file: groundtruth.txt
 
 TUM_DATASET:
   type: tum

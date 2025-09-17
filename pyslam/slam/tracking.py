@@ -1263,7 +1263,7 @@ class Tracking:
 
         # print("frame: ", f_cur.id)
         self.timer_frame.refresh()
-
+        
         # reset indexes of matches
         self.idxs_ref = []
         self.idxs_cur = []

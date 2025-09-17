@@ -22,14 +22,14 @@ import time
 import cv2
 import random
 
-from pyslam.slam.frame import Frame, FeatureTrackerShared, match_frames
+from pyslam.slam.frame import Frame, FeatureTrackerShared, match_frames, match_lines
 from pyslam.slam.keyframe import KeyFrame
 
 from collections import deque
 
 from pyslam.slam.map import Map
 from pyslam.utilities.utils_geom import poseRt, inv_T
-from pyslam.utilities.utils_geom_triangulation import triangulate_normalized_points
+from pyslam.utilities.utils_geom_triangulation import triangulate_normalized_points, normalize_points
 from pyslam.utilities.utils_sys import Printer
 from pyslam.utilities.utils_features import ImageGrid
 from pyslam.config_parameters import Parameters
@@ -58,11 +58,15 @@ kMaxLenFrameDeque = kMaxIdDistBetweenIntializingFrames + 1
 
 class InitializerOutput(object):
     def __init__(self):
-        self.pts = None  # 3d points [Nx3]
+        self.pts = None           # 3D points
+        self.lines = None         # MapLine objects  
+        self.lines_3d = None      # Raw 3D line coordinates (N,2,3)
         self.kf_cur = None
         self.kf_ref = None
-        self.idxs_cur = None
-        self.idxs_ref = None
+        self.idxs_cur = None      # Point indices
+        self.idxs_ref = None      # Point indices
+        self.idxs_cur_lines = None # Line indices
+        self.idxs_ref_lines = None # Line indices
 
 
 class Initializer(object):
@@ -219,12 +223,14 @@ class Initializer(object):
 
         # if the current frames do no have enough features exit
         if len(f_ref.kps) < self.num_min_features or len(f_cur.kps) < self.num_min_features:
-            Printer.yellow("Initializer: ko - not enough features!")
+            Printer.yellow(f"Initializer: ko - not enough features (min {self.num_min_features})!")
             self.num_failures += 1
             return out, is_ok
 
         # find keypoint matches
         matching_result = match_frames(f_cur, f_ref, kInitializerFeatureMatchRatioTest)
+        matching_lines = match_lines(f_cur, f_ref) # indices of matching lines
+
         idxs_cur = (
             np.asarray(matching_result.idxs1, dtype=int)
             if matching_result.idxs1 is not None
@@ -324,6 +330,48 @@ class Initializer(object):
                 False  # in this case, we do not check reprojection errors and other related stuff
             )
         else:
+            ############################################################################################
+            ## TODO: we try to use lines endpoint to make the triangulation more robust
+            ## FIXME:
+            do_linematches = True
+            if do_linematches:
+                if matching_lines is not None and len(matching_lines) > 0:
+                    print(f"QUICK DEBUG:")
+                    print(f"  Current frame lines: {len(f_cur.lines)}")
+                    print(f"  Reference frame lines: {len(f_ref.lines)}")
+                    print(f"  Matches found: {len(matching_lines)}")
+                    print(f"  First few matches: {matching_lines[:5] if len(matching_lines) > 0 else 'None'}")
+                    K = kf_cur.camera.K  # intrinsics
+                    lines3d_list = []
+                    idxs_cur_lines = []
+                    idxs_ref_lines  = []
+                    for (i_line_cur, j_line_ref) in matching_lines:
+                        line_cur = f_cur.lines[i_line_cur]   # (x1,y1,x2,y2)
+                        line_ref = f_ref.lines[j_line_ref]
+
+                        pts1 = np.array([[line_cur[0], line_cur[1]], [line_cur[2], line_cur[3]]], dtype=np.float32).T  # shape (2,2)
+                        pts2 = np.array([[line_ref[0], line_ref[1]], [line_ref[2], line_ref[3]]], dtype=np.float32).T
+
+                        pts1_norm = normalize_points(pts1, K)
+                        pts2_norm = normalize_points(pts2, K)
+
+                        # Triangulate endpoints -> two 3D points in world coords
+                        epts3d, mask_pts3d = triangulate_normalized_points(kf_cur.Tcw, kf_ref.Tcw, 
+                                                                pts1_norm, pts2_norm)
+                        epts3d = epts3d.T if epts3d.shape[0] == 3 else epts3d
+
+                        if epts3d is None:
+                            Printer.red("Initializer: ko - line endpoints triangulation failed!")
+                            continue
+
+                        # reshape to (2,3) endpoints
+                        epts3d = epts3d.T if epts3d.shape[0] == 3 else epts3d
+
+                        lines3d_list.append(epts3d)
+                        idxs_cur_lines.append(i_line_cur)
+                        idxs_ref_lines.append(j_line_ref)
+            
+            # Triangulate points
             pts3d, mask_pts3d = triangulate_normalized_points(
                 kf_cur.Tcw, kf_ref.Tcw, kf_cur.kpsn[idxs_cur_inliers], kf_ref.kpsn[idxs_ref_inliers]
             )
@@ -340,6 +388,20 @@ class Initializer(object):
             cos_max_parallax=Parameters.kCosMaxParallaxInitializer,
         )
         print("Initializer: # triangulated points: ", new_pts_count)
+
+        added_map_lines = []
+        new_lines_count = 0
+        if len(lines3d_list) > 0:
+            lines3d_array = np.array(lines3d_list)  # shape (N,2,3)
+            new_lines_count, added_map_lines = map.add_lines(
+                lines3d_array, kf_cur, kf_ref, idxs_cur_lines, idxs_ref_lines, img_cur
+            )
+            print(f"Initializer: # triangulated lines: {new_lines_count}")
+
+        # Check if we have sufficient features (points + lines) for initialization
+        total_features = new_pts_count + new_lines_count
+        min_total_features = max(self.num_min_triangulated_points, 
+                                self.num_min_triangulated_points // 2 + len(lines3d_list) // 2)
 
         if new_pts_count > self.num_min_triangulated_points:
 

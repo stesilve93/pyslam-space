@@ -76,6 +76,10 @@ def groundtruth_factory(settings):
         return KittiGroundTruth(
             path, name, associations, start_frame_id, type=GroundTruthType.KITTI
         )
+    if type == "rvd":
+        if "associations" in settings:
+            associations = settings["associations"]
+        return RvdGroundTruth(path, name, associations, start_frame_id, type=GroundTruthType.TUM)
     if type == "tum":
         if "associations" in settings:
             associations = settings["associations"]
@@ -527,6 +531,104 @@ class KittiGroundTruth(GroundTruth):
         # print(f'reading frame {frame_id}, timestamp: {timestamp:.15f}, x: {x:.15f}, y: {y:.15f}, z: {z:.15f}, scale: {abs_scale:.15f}')
         return timestamp, x, y, z, q[0], q[1], q[2], q[3], abs_scale
 
+class RvdGroundTruth(GroundTruth):
+    def __init__(self, path, name, associations=None, start_frame_id=0, type=GroundTruthType.TUM):
+        super().__init__(path, name, associations, start_frame_id, type)
+        self.scale = kScaleTum
+        self.filename = (
+            path + "/" + name + "/" + "groundtruth.txt"
+        )  # N.B.: this may depend on how you deployed the groundtruth files
+        if not os.path.isfile(self.filename):
+            self.filename = path + "/" + name + "/" + "gt.freiburg"  # For ICL-NUIM support
+        self.associations_path = (
+            path + "/" + name + "/" + associations
+        )  # N.B.: this may depend on how you name the associations file
+
+        if not os.path.isfile(self.filename):
+            error_message = f"ERROR: [TumGroundTruth] Groundtruth file not found: {self.filename}!"
+            Printer.red(error_message)
+            sys.exit(error_message)
+
+        base_path = os.path.dirname(self.filename)
+        print("[TumGroundTruth] base_path: ", base_path)
+
+        with open(self.filename) as f:
+            self.data = f.readlines()[3:]  # skip the first three rows, which are only comments
+            self.data = [line.strip().split() for line in self.data]
+            self.data = np.ascontiguousarray(self.data)
+        if self.data is None:
+            sys.exit("ERROR [TumGroundTruth] while reading groundtruth file!")
+        if self.associations_path is not None:
+            with open(self.associations_path) as f:
+                self.associations_data = f.readlines()
+                self.associations_data = [line.strip().split() for line in self.associations_data]
+            if self.associations_data is None:
+                sys.exit("ERROR [TumGroundTruth] while reading associations file!")
+
+        associations_file = base_path + "/gt_associations.json"
+        if True:  # not os.path.exists(associations_file):
+            # Printer.orange('Computing groundtruth associations (one-time operation, results will be saved)...')
+            if len(self.associations_data) == 0 or len(self.data) == 0:
+                Printer.orange(
+                    f"WARNING: you have #associations = {len(self.associations_data)} and #groundtruth samples = {len(self.data)}"
+                )
+            self.association_matches = self.associate(self.associations_data, self.data)
+            # save associations
+            with open(associations_file, "w") as f:
+                json.dump(self.association_matches, f)
+        else:
+            with open(associations_file, "r") as f:
+                data = json.load(f)
+                self.association_matches = {int(k): v for k, v in data.items()}
+
+    def getDataLine(self, frame_id):
+        return self.data[self.association_matches[frame_id][0]]
+
+    # return timestamp,x,y,z,scale
+    def getTimestampPositionAndAbsoluteScale(self, frame_id):
+        frame_id += self.start_frame_id
+        try:
+            ss = self.getDataLine(frame_id - 1)
+            x_prev = self.scale * float(ss[1])
+            y_prev = self.scale * float(ss[2])
+            z_prev = self.scale * float(ss[3])
+        except:
+            x_prev, y_prev, z_prev = None, None, None
+        ss = self.getDataLine(frame_id)
+        timestamp = float(ss[0])
+        x = self.scale * float(ss[1])
+        y = self.scale * float(ss[2])
+        z = self.scale * float(ss[3])
+        if x_prev is None:
+            abs_scale = 1
+        else:
+            abs_scale = np.sqrt((x - x_prev) ** 2 + (y - y_prev) ** 2 + (z - z_prev) ** 2)
+        return timestamp, x, y, z, abs_scale
+
+    # return timestamp, x,y,z, qx,qy,qz,qw, scale
+    def getTimestampPoseAndAbsoluteScale(self, frame_id):
+        frame_id += self.start_frame_id
+        try:
+            ss = self.getDataLine(frame_id - 1)
+            x_prev = self.scale * float(ss[1])
+            y_prev = self.scale * float(ss[2])
+            z_prev = self.scale * float(ss[3])
+        except:
+            x_prev, y_prev, z_prev = None, None, None
+        ss = self.getDataLine(frame_id)
+        timestamp = float(ss[0])
+        x = self.scale * float(ss[1])
+        y = self.scale * float(ss[2])
+        z = self.scale * float(ss[3])
+        qx = float(ss[4])
+        qy = float(ss[5])
+        qz = float(ss[6])
+        qw = float(ss[7])
+        if x_prev is None:
+            abs_scale = 1
+        else:
+            abs_scale = np.sqrt((x - x_prev) ** 2 + (y - y_prev) ** 2 + (z - z_prev) ** 2)
+        return timestamp, x, y, z, qx, qy, qz, qw, abs_scale
 
 class TumGroundTruth(GroundTruth):
     def __init__(self, path, name, associations=None, start_frame_id=0, type=GroundTruthType.TUM):

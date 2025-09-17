@@ -73,6 +73,8 @@ import argparse
 
 from matplotlib import pyplot as plt
 
+from pyslam.slam.frame import Frame
+from pyslam.slam.keyframe import KeyFrame
 
 datetime_string = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -212,7 +214,7 @@ if __name__ == "__main__":
         Parameters.kVolumetricIntegrationUseDepthEstimator = False  # Just use this depth estimator in the front-end (This is not a choice, we are imposing it for avoiding computing the depth twice)
         # Select your depth estimator (see the file depth_estimator_factory.py)
         # DEPTH_ANYTHING_V2, DEPTH_PRO, DEPTH_RAFT_STEREO, DEPTH_SGBM, etc.
-        depth_estimator_type = DepthEstimatorType.DEPTH_PRO
+        depth_estimator_type = DepthEstimatorType.DEPTH_ANYTHING_V2
         max_depth = 20
         depth_estimator = depth_estimator_factory(
             depth_estimator_type=depth_estimator_type,
@@ -331,6 +333,7 @@ if __name__ == "__main__":
 
                     if not args.headless:
                         img_draw = slam.map.draw_feature_trails(img)
+                        # draw lines
                         img_writer.write(img_draw, f"id: {img_id}", (30, 30))
                         # 2D display (image display)
                         cv2.imshow("Camera", img_draw)

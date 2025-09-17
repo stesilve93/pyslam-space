@@ -47,6 +47,7 @@ from .dataset import (
     TartanairDataset,
     VideoDataset,
     LiveDataset,
+    RvdDataset,
 )
 
 
@@ -114,6 +115,8 @@ def dataset_factory(config: "Config") -> Dataset:
             path, name, sensor_type, associations, start_frame_id, DatasetType.KITTI
         )
         dataset.set_is_color(is_color)
+    if type == "rvd":
+        dataset = RvdDataset(path, name, sensor_type, associations, start_frame_id, DatasetType.TUM)
     if type == "tum":
         dataset = TumDataset(path, name, sensor_type, associations, start_frame_id, DatasetType.TUM)
     if type == "euroc":

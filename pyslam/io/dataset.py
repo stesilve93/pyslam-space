@@ -572,6 +572,74 @@ class KittiDataset(Dataset):
         self.is_ok = img is not None
         return np.ascontiguousarray(img) if img is not None else None
 
+class RvdDataset(Dataset):
+    def __init__(
+        self,
+        path,
+        name,
+        sensor_type=SensorType.RGBD,
+        associations=None,
+        start_frame_id=0,
+        type=DatasetType.TUM,
+    ):
+        super().__init__(path, name, sensor_type, 30, associations, start_frame_id, type)
+        self.environment_type = DatasetEnvironmentType.OUTDOOR
+        if sensor_type != SensorType.MONOCULAR and sensor_type != SensorType.RGBD:
+            raise ValueError("RVD dataset only supports MONOCULAR and RGBD sensor types")
+        self.fps = 30
+        self.scale_viewer_3d = 0.1
+        if sensor_type == SensorType.MONOCULAR:
+            self.scale_viewer_3d = 0.05
+        print("Processing Proximity Rendez-Vous Sequence")
+        self.base_path = self.path + "/" + self.name + "/"
+        self.associations_path = self.path + "/" + self.name + "/" + associations
+        with open(self.associations_path) as f:
+            self.associations_data = f.readlines()
+            self.max_frame_id = len(self.associations_data)
+            self.num_frames = self.max_frame_id
+        if self.associations_data is None:
+            sys.exit("ERROR while reading associations file!")
+
+    def getImage(self, frame_id):
+        img = None
+        # NOTE: frame_id is already shifted by start_frame_id in Dataset.getImageColor()
+        if frame_id < self.max_frame_id:
+            file = self.base_path + self.associations_data[frame_id].strip().split()[1]
+            img = cv2.imread(file)
+            self.is_ok = img is not None
+            self._timestamp = float(self.associations_data[frame_id].strip().split()[0])
+            if frame_id + 1 < self.max_frame_id:
+                self._next_timestamp = float(
+                    self.associations_data[frame_id + 1].strip().split()[0]
+                )
+            else:
+                self._next_timestamp = self._timestamp + self.Ts
+        else:
+            self.is_ok = False
+            self._timestamp = None
+        return np.ascontiguousarray(img) if img is not None else None
+
+    def getDepth(self, frame_id):
+        if self.sensor_type == SensorType.MONOCULAR:
+            return None  # force a monocular camera if required (to get a monocular tracking even if depth is available)
+        frame_id += self.start_frame_id
+        img = None
+        if frame_id < self.max_frame_id:
+            file = self.base_path + self.associations_data[frame_id].strip().split()[3]
+            img = cv2.imread(file, cv2.IMREAD_UNCHANGED)
+            self.is_ok = img is not None
+            print(f"Reading depth image from {file}, is_ok: {self.is_ok}")
+            self._timestamp = float(self.associations_data[frame_id].strip().split()[0])
+            if frame_id + 1 < self.max_frame_id:
+                self._next_timestamp = float(
+                    self.associations_data[frame_id + 1].strip().split()[0]
+                )
+            else:
+                self._next_timestamp = self._timestamp + self.Ts
+        else:
+            self.is_ok = False
+            self._timestamp = None
+        return np.ascontiguousarray(img) if img is not None else None
 
 class TumDataset(Dataset):
     def __init__(

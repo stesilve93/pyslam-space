@@ -71,3 +71,9 @@ def triangulate_normalized_points(pose_1w, pose_2w, kpn_1, kpn_2):
     # return point_4d.T
     points_3d = point_4d[:3, :].T
     return points_3d, good_pts_mask
+
+def normalize_points(pts, K):
+    # pts: shape (2,N), in pixels
+    Kinv = np.linalg.inv(K)
+    pts_h = np.vstack([pts, np.ones((1, pts.shape[1]))])  # homogeneous
+    return (Kinv @ pts_h)[:2]   # shape (2,N), normalized

@@ -428,6 +428,9 @@ class Frame(FrameBase):
         self.des_r = None  # right keypoint descriptors                                     [NxD] where D is the descriptor length
         self.depths = None  # keypoint depths                                                [Nx1]
         self.kps_ur = None  # corresponding right u-coordinates for left keypoints           [Nx1] (computed with stereo matching and assuming rectified stereo images)
+        # TODO: add here the lines and descriptors for lines (optional) s
+        self.lines = None      # detected line segments, [N,4]
+        #self.lines_desc = None # optional descriptors
 
         # map points information arrays
         self.points: list[MapPoint] | None = (
@@ -520,8 +523,12 @@ class Frame(FrameBase):
                         img_right
                     )
                 # print(f'kps: {len(self.kps)}, des: {self.des.shape}, kps_r: {len(self.kps_r)}, des_r: {self.des_r.shape}')
+                # TODO: inser line detection here! Store the results in new attributes (say self.lines and self.lines_desc).
             else:
                 self.kps, self.des = FeatureTrackerShared.feature_tracker.detectAndCompute(img)
+
+            self.lines = self.detect_lines(img)
+            print(f"[FRAME] detected {len(self.lines)} lines")
 
             # convert from a list of keypoints to arrays of points, octaves, sizes
             if self.kps is not None:
@@ -564,6 +571,14 @@ class Frame(FrameBase):
 
             self.ensure_contiguous()
 
+    @staticmethod
+    def detect_lines(img):
+        edges = cv2.Canny(img, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi/180, 80, minLineLength=30, maxLineGap=10)
+        if lines is not None:
+            return lines[:,0,:]  # [N,4]: x1,y1,x2,y2
+        return np.empty((0,4), dtype=np.float32)
+    
     def ensure_contiguous(self):
         for attr in [
             "kps",
@@ -1403,6 +1418,8 @@ class Frame(FrameBase):
                 else:
                     # no corresponding 3D point
                     cv2.circle(img, uv, color=(0, 0, 0), radius=2)  # radius=radius)
+            for (x1, y1, x2, y2) in self.lines:
+                cv2.line(img, (x1,y1), (x2,y2), (0,0,255), 2)
             return img
 
     # draw tracked features on the image
@@ -1533,6 +1550,96 @@ def match_frames(f1: Frame, f2: Frame, ratio_test=None):
     # idxs2 = np.asarray(idxs2)
     # return idxs1, idxs2
 
+# def match_lines(f1: Frame, f2: Frame, angle_thresh=np.deg2rad(10), dist_thresh=20):
+#     lines1 = f1.lines
+#     lines2 = f2.lines
+#     matches = []
+#     for i, (x1, y1, x2, y2) in enumerate(lines1):
+#         p1_mid = np.array([(x1+x2)/2, (y1+y2)/2])
+#         dir1 = np.arctan2(y2-y1, x2-x1)
+#         for j, (u1, v1, u2, v2) in enumerate(lines2):
+#             p2_mid = np.array([(u1+u2)/2, (v1+v2)/2])
+#             dir2 = np.arctan2(v2-v1, u2-u1)
+#             if abs(dir1-dir2) < angle_thresh and np.linalg.norm(p1_mid-p2_mid) < dist_thresh:
+#                 matches.append((i, j))
+#     return matches
+
+def match_lines(f_cur: Frame, f_ref: Frame, max_distance_threshold=50.0, ratio_test=0.8):
+    """
+    Proper line matching with uniqueness constraints and ratio test.
+    Returns list of (idx_cur, idx_ref) tuples with one-to-one matches only.
+    """
+    if len(f_cur.lines) == 0 or len(f_ref.lines) == 0:
+        return []
+    
+    # Compute all pairwise distances/similarities
+    distances = np.full((len(f_cur.lines), len(f_ref.lines)), float('inf'))
+    
+    for i, line_cur in enumerate(f_cur.lines):
+        for j, line_ref in enumerate(f_ref.lines):
+            # Compute line similarity (you can use your existing line matching metric)
+            dist = compute_line_distance(line_cur, line_ref)  # Your existing function
+            distances[i, j] = dist
+    
+    matches = []
+    used_ref_indices = set()
+    used_cur_indices = set()
+    
+    # For each line in current frame, find best matches
+    for i in range(len(f_cur.lines)):
+        # Get distances for current line to all reference lines
+        cur_distances = distances[i, :]
+        
+        # Find two best matches for ratio test
+        sorted_indices = np.argsort(cur_distances)
+        best_idx = sorted_indices[0]
+        second_best_idx = sorted_indices[1] if len(sorted_indices) > 1 else None
+        
+        best_dist = cur_distances[best_idx]
+        
+        # Skip if distance is too high
+        if best_dist > max_distance_threshold:
+            continue
+            
+        # Ratio test (similar to SIFT matching)
+        if second_best_idx is not None:
+            second_best_dist = cur_distances[second_best_idx]
+            if best_dist / second_best_dist > ratio_test:
+                continue
+        
+        # Check if this reference line is already used
+        if best_idx in used_ref_indices:
+            continue
+            
+        # Check mutual best match (optional but recommended)
+        ref_best_cur = np.argmin(distances[:, best_idx])
+        if ref_best_cur != i:
+            continue  # Not mutual best match
+        
+        # Add match
+        matches.append((i, best_idx))
+        used_ref_indices.add(best_idx)
+        used_cur_indices.add(i)
+    
+    return matches
+
+def compute_line_distance(line1, line2):
+    """
+    Compute distance between two lines.
+    lines format: (x1, y1, x2, y2)
+    You can replace this with your existing line matching metric.
+    """
+    # Simple endpoint distance (replace with your line descriptor matching)
+    p1_start = np.array([line1[0], line1[1]])
+    p1_end = np.array([line1[2], line1[3]])
+    p2_start = np.array([line2[0], line2[1]])
+    p2_end = np.array([line2[2], line2[3]])
+    
+    # Try both orientations
+    dist1 = np.linalg.norm(p1_start - p2_start) + np.linalg.norm(p1_end - p2_end)
+    dist2 = np.linalg.norm(p1_start - p2_end) + np.linalg.norm(p1_end - p2_start)
+    
+    return min(dist1, dist2)
 
 def compute_frame_matches_threading(
     target_frame: Frame,

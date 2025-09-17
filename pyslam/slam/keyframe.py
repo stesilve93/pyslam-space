@@ -295,6 +295,9 @@ class KeyFrame(Frame, KeyFrameGraph):
         self.fov_center_c = frame.fov_center_c
         self.fov_center_w = frame.fov_center_w
 
+        # TODO: add here the lines and descriptors for lines (optional) s
+        self.lines = frame.lines      # detected line segments, [N,4]
+        
         # for loop closing
         self.g_des = None  # global (image-wise) descriptor for loop closing
         self.loop_query_id = None

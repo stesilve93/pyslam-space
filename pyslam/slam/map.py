@@ -32,6 +32,7 @@ from pyslam.utilities.utils_geom import poseRt, add_ones, add_ones_1D
 from .frame import Frame, FeatureTrackerShared, FrameBase
 from .keyframe import KeyFrame
 from .map_point import MapPoint, MapPointBase
+from .map_line import MapLine
 
 from pyslam.utilities.utils_sys import Printer
 
@@ -241,6 +242,18 @@ class Map(object):
             # self.points.append(point)
             self.points.add(point)
             return ret
+        
+    def add_line(self, line: MapLine):
+        """
+        Add a single MapLine to the map's storage.
+        """
+        with self._lock:
+            if not hasattr(self, 'map_lines'):
+                self.map_lines = []
+
+            self.map_lines.append(line)
+            return line.id
+
 
     def remove_point(self, point):
         with self._lock:
@@ -624,6 +637,48 @@ class Map(object):
                 out_mask_pts3d[i] = True
                 added_map_points.append(mp)
             return len(added_map_points), out_mask_pts3d, added_map_points
+
+    def add_lines(self, lines3d, kf1: KeyFrame, kf2: KeyFrame, idxs1, idxs2, img1=None, do_check=True):
+        """
+        Add triangulated 3D lines to the map.
+        lines3d: array of shape (N, 2, 3)  -> each line: two 3D endpoints
+        idxs1/idxs2: corresponding line indices in kf1/kf2
+        """
+        with self._lock:
+            assert kf1.is_keyframe and kf2.is_keyframe
+            added_map_lines = []
+
+            for i, seg in enumerate(lines3d):
+                p0, p1 = seg
+                idx1_i = idxs1[i]
+                idx2_i = idxs2[i]
+
+                if do_check:
+                    # simple cheirality check
+                    uv0_1, uv1_1 = kf1.project_points(np.vstack([p0, p1]))
+                    uv0_2, uv1_2 = kf2.project_points(np.vstack([p0, p1]))
+                    if uv0_1 is None or uv1_1 is None or uv0_2 is None or uv1_2 is None:
+                        continue
+                    # optionally add more checks (length threshold, reprojection error)
+
+                # create MapLine
+                ml = MapLine(p0, p1, id=MapLine._next_id)
+                MapLine._next_id += 1
+
+                # add observations
+                ml.add_observation(kf1, idx1_i)
+                ml.add_observation(kf2, idx2_i)
+
+                # optional: extract average color along line from img1
+                if img1 is not None:
+                    uv0 = np.rint(uv0_1).astype(int)
+                    uv1 = np.rint(uv1_1).astype(int)
+
+                # store in map
+                self.add_line(ml)
+                added_map_lines.append(ml)
+
+            return len(added_map_lines), added_map_lines
 
     # add new points to the map from 3D point stereo-back-projection
     # points3d is [Nx3]
