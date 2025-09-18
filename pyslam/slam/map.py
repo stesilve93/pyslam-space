@@ -184,6 +184,14 @@ class Map(object):
     def num_points(self):
         with self._lock:
             return len(self.points)
+        
+    def get_lines(self):
+        with self._lock:
+            return self.map_lines.copy()
+
+    def num_lines(self):
+        with self._lock:
+            return len(self.map_lines)
 
     def get_frame(self, idx):
         with self._lock:
@@ -644,11 +652,15 @@ class Map(object):
         lines3d: array of shape (N, 2, 3)  -> each line: two 3D endpoints
         idxs1/idxs2: corresponding line indices in kf1/kf2
         """
+        added_map_lines = []
+        out_mask_lines3d = np.full(lines3d.shape[0], False, dtype=bool)
+
         with self._lock:
             assert kf1.is_keyframe and kf2.is_keyframe
             added_map_lines = []
 
             for i, seg in enumerate(lines3d):
+                # TODO: add the mask check if do_check is disabled, because we already did it before to filter lines
                 p0, p1 = seg
                 idx1_i = idxs1[i]
                 idx2_i = idxs2[i]
@@ -659,8 +671,7 @@ class Map(object):
                     uv0_2, uv1_2 = kf2.project_points(np.vstack([p0, p1]))
                     if uv0_1 is None or uv1_1 is None or uv0_2 is None or uv1_2 is None:
                         continue
-                    # optionally add more checks (length threshold, reprojection error)
-
+                
                 # create MapLine
                 ml = MapLine(p0, p1, id=MapLine._next_id)
                 MapLine._next_id += 1
@@ -669,16 +680,12 @@ class Map(object):
                 ml.add_observation(kf1, idx1_i)
                 ml.add_observation(kf2, idx2_i)
 
-                # optional: extract average color along line from img1
-                if img1 is not None:
-                    uv0 = np.rint(uv0_1).astype(int)
-                    uv1 = np.rint(uv1_1).astype(int)
-
                 # store in map
                 self.add_line(ml)
                 added_map_lines.append(ml)
+                out_mask_lines3d[i] = True
 
-            return len(added_map_lines), added_map_lines
+            return len(added_map_lines), out_mask_lines3d, added_map_lines
 
     # add new points to the map from 3D point stereo-back-projection
     # points3d is [Nx3]
@@ -760,23 +767,122 @@ class Map(object):
                 Printer.blue("# culled map points: ", culled_pt_count)
 
     def compute_mean_reproj_error(self, points=None):
-        chi2 = 0
+        """
+        Compute average reprojection error for map points.
+
+        The reprojection error is computed as the standard point-to-point pixel
+        reprojection error. The average reprojection error is then computed
+        as the sum of the reprojection errors divided by the number of
+        observations.
+
+        Parameters
+        ----------
+        points : list of MapPoint, optional
+            List of map points to compute the average reprojection error
+            for. If None, the average reprojection error is computed for all
+            map points.
+
+        Returns
+        -------
+        mean_chi2 : float
+            Average reprojection error for the map points.
+        """
+        chi2 = 0.0
         num_obs = 0
         inv_level_sigmas2 = FeatureTrackerShared.feature_manager.inv_level_sigmas2
         with self._lock:
             with self.update_lock:
                 if points is None:
                     points = self.points
+                # iterate over all map points
                 for p in points:
                     # compute reprojection error
                     for f, idx in p.observations():
+                        # compute reprojection error for this observation
                         uv = f.kpsu[idx]
                         proj, _ = f.project_map_point(p)
                         invSigma2 = inv_level_sigmas2[f.octaves[idx]]
                         err = proj - uv
                         chi2 += np.inner(err, err) * invSigma2
                         num_obs += 1
+        # compute average reprojection error
+        mean_chi2 = chi2 / max(num_obs, 1)
+        return mean_chi2
+    
+    def compute_mean_reproj_error_points_lines(self, points=None, lines=None):
+        """
+        Compute average reprojection error for points and lines.
+
+        The reprojection error for points is computed as the standard point-to-point pixel
+        reprojection error. The reprojection error for lines is computed as the point-to-line
+        distance (each observed endpoint to reprojected 3D line).
+
+        Parameters
+        ----------
+        points : list of MapPoint, optional
+            List of map points to compute the average reprojection error for.
+            If None, the average reprojection error is computed for all map points.
+        lines : list of MapLine, optional
+            List of map lines to compute the average reprojection error for.
+            If None, the average reprojection error is computed for all map lines.
+
+        Returns
+        -------
+        mean_chi2 : float
+            Average reprojection error for the map points and lines.
+        """
+        chi2 = 0.0
+        num_obs = 0
+        inv_level_sigmas2 = FeatureTrackerShared.feature_manager.inv_level_sigmas2
+
+        with self._lock, self.update_lock:
+            # ---- Points ----
+            if points is None:
+                points = self.points
+            for p in points:
+                for f, idx in p.observations():
+                    uv = f.kpsu[idx]  # observed pixel (undistorted)
+                    proj, _ = f.project_map_point(p)
+                    if proj is None:
+                        continue
+                    invSigma2 = inv_level_sigmas2[f.octaves[idx]]
+                    err = proj - uv
+                    chi2 += np.inner(err, err) * invSigma2
+                    num_obs += 1
+
+            # ---- Lines ----
+            if lines is None:
+                lines = self.map_lines
+                print(f"Debug: reprojection of {len(lines)}")
+            for l in lines:
+                for kf, line_idx in l.observations.items():
+                    # observed line segment
+                    obs_line = kf.lines[line_idx]  # (x1,y1,x2,y2)
+                    p1 = np.array([obs_line[0], obs_line[1], 1.0])
+                    p2 = np.array([obs_line[2], obs_line[3], 1.0])
+                    l_obs = np.cross(p1, p2)
+                    l_obs /= np.linalg.norm(l_obs[:2])  # normalize
+
+                    # project the 3D line endpoints
+                    uv_proj, zs = kf.project_points(np.vstack([l.p0, l.p1]))
+                    if uv_proj is None or np.any(zs <= 0):
+                        continue
+                    uv0_h = np.array([uv_proj[0, 0], uv_proj[0, 1], 1.0])
+                    uv1_h = np.array([uv_proj[1, 0], uv_proj[1, 1], 1.0])
+                    l_proj = np.cross(uv0_h, uv1_h)
+                    l_proj /= np.linalg.norm(l_proj[:2])
+
+                    # error = distance of observed endpoints to projected line
+                    d1 = abs(l_proj @ p1) / np.linalg.norm(l_proj[:2])
+                    d2 = abs(l_proj @ p2) / np.linalg.norm(l_proj[:2])
+                    err = 0.5 * (d1 + d2)
+
+                    # optional weighting (similar to points, could depend on octave)
+                    chi2 += err * err
+                    num_obs += 1
+
         return chi2 / max(num_obs, 1)
+
 
     # BA considering all keyframes:
     # - local keyframes are adjusted,
@@ -798,6 +904,7 @@ class Map(object):
         err = bundle_adjustment_fun(
             self.get_keyframes(),
             self.get_points(),
+            self.get_lines(),
             local_window=local_window,
             rounds=rounds,
             loop_kf_id=0,

@@ -1566,7 +1566,7 @@ def match_frames(f1: Frame, f2: Frame, ratio_test=None):
 
 def match_lines(f_cur: Frame, f_ref: Frame, max_distance_threshold=50.0, ratio_test=0.8):
     """
-    Proper line matching with uniqueness constraints and ratio test.
+    Line matching with uniqueness constraints and ratio test.
     Returns list of (idx_cur, idx_ref) tuples with one-to-one matches only.
     """
     if len(f_cur.lines) == 0 or len(f_ref.lines) == 0:
@@ -1577,8 +1577,8 @@ def match_lines(f_cur: Frame, f_ref: Frame, max_distance_threshold=50.0, ratio_t
     
     for i, line_cur in enumerate(f_cur.lines):
         for j, line_ref in enumerate(f_ref.lines):
-            # Compute line similarity (you can use your existing line matching metric)
-            dist = compute_line_distance(line_cur, line_ref)  # Your existing function
+            # Compute line similarity 
+            dist = compute_line_distance(line_cur, line_ref)  
             distances[i, j] = dist
     
     matches = []
@@ -1611,7 +1611,7 @@ def match_lines(f_cur: Frame, f_ref: Frame, max_distance_threshold=50.0, ratio_t
         if best_idx in used_ref_indices:
             continue
             
-        # Check mutual best match (optional but recommended)
+        # Check mutual best match 
         ref_best_cur = np.argmin(distances[:, best_idx])
         if ref_best_cur != i:
             continue  # Not mutual best match

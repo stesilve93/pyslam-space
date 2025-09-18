@@ -71,6 +71,7 @@ class Parameters:
     kInitializerDesiredMedianDepth = 1  # When initializing, the initial median depth is computed and forced to this value (for better visualization is > 1)
     kInitializerMinRatioDepthBaseline = 100  # Compare to 1/kMinRatioBaselineDepth
     kInitializerNumMinFeatures = 100
+    kInitializerNumMinLines = 3
     kInitializerNumMinFeaturesStereo = 500
     kInitializerNumMinTriangulatedPoints = 150
     kInitializerNumMinTriangulatedPointsStereo = 100

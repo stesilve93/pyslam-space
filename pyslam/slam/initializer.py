@@ -88,6 +88,7 @@ class Initializer(object):
             else Parameters.kInitializerNumMinTriangulatedPointsStereo
         )
         self.num_failures = 0
+        self.num_min_lines = Parameters.kInitializerNumMinLines
 
         # more checks for monocular inizialization
         self.check_min_frame_distance = Parameters.kInitializerUseMinFrameDistanceCheck
@@ -222,8 +223,16 @@ class Initializer(object):
                 return out, is_ok
 
         # if the current frames do no have enough features exit
-        if len(f_ref.kps) < self.num_min_features or len(f_cur.kps) < self.num_min_features:
-            Printer.yellow(f"Initializer: ko - not enough features (min {self.num_min_features})!")
+        # TODO: add check on sufficient lines. Need for possible init only on lines
+        if ((len(f_ref.kps) < self.num_min_features 
+             or len(f_cur.kps) < self.num_min_features) 
+            #  and (len(f_ref.lines) < self.num_min_lines
+            #  or len(f_cur.lines) < self.num_min_lines)
+            ):
+            Printer.yellow(
+            f"Initializer: ko - not enough features {len(f_ref.kps)} (min {self.num_min_features}) "
+            f"or lines {len(f_ref.lines)} (min {self.num_min_lines})!"
+            )
             self.num_failures += 1
             return out, is_ok
 
@@ -370,6 +379,9 @@ class Initializer(object):
                         lines3d_list.append(epts3d)
                         idxs_cur_lines.append(i_line_cur)
                         idxs_ref_lines.append(j_line_ref)
+                    
+                    idxs_cur_lines = np.array(idxs_cur_lines)
+                    idxs_ref_lines = np.array(idxs_ref_lines)
             
             # Triangulate points
             pts3d, mask_pts3d = triangulate_normalized_points(
@@ -393,7 +405,7 @@ class Initializer(object):
         new_lines_count = 0
         if len(lines3d_list) > 0:
             lines3d_array = np.array(lines3d_list)  # shape (N,2,3)
-            new_lines_count, added_map_lines = map.add_lines(
+            new_lines_count, mask_lines, added_map_lines = map.add_lines(
                 lines3d_array, kf_cur, kf_ref, idxs_cur_lines, idxs_ref_lines, img_cur
             )
             print(f"Initializer: # triangulated lines: {new_lines_count}")
@@ -403,9 +415,9 @@ class Initializer(object):
         min_total_features = max(self.num_min_triangulated_points, 
                                 self.num_min_triangulated_points // 2 + len(lines3d_list) // 2)
 
-        if new_pts_count > self.num_min_triangulated_points:
+        if total_features > min_total_features:
 
-            reproj_error_before = map.compute_mean_reproj_error()
+            reproj_error_before = map.compute_mean_reproj_error_points_lines()
             print(f"Initializer: reprojection error before: {reproj_error_before}")
 
             reproj_error_after, _ = map.optimize(verbose=False, rounds=20, use_robust_kernel=True)
@@ -434,6 +446,10 @@ class Initializer(object):
                 out.idxs_cur = idxs_cur_inliers[mask_points]
                 out.kf_ref = kf_ref
                 out.idxs_ref = idxs_ref_inliers[mask_points]
+
+                out.lines_3d = np.array([[ml.p0, ml.p1] for ml in added_map_lines])
+                out.idxs_cur_lines = idxs_cur_lines[mask_lines]
+                out.idxs_ref_lines = idxs_ref_lines[mask_lines]
 
             if is_ok and self.is_monocular:
                 median_depth = kf_cur.compute_points_median_depth(out_pts3d)

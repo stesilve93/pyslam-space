@@ -72,6 +72,7 @@ def sync_flag_fun(abort_flag, mp_abort_flag, print=print):
 def bundle_adjustment(
     keyframes,
     points,
+    lines,
     local_window,
     fixed_points=False,
     rounds=10,
@@ -215,6 +216,111 @@ def bundle_adjustment(
             opt.add_edge(edge)
             graph_edges[edge] = is_stereo_obs
             num_edges += 1
+ # -------------------------------------------------------------------------
+    # Add line endpoints as point-vertices + edges
+    # lines: iterable of MapLine objects (may be None)
+    # Each MapLine: .p0, .p1 (3-vector), .observations => dict(kf -> line_idx)
+    # For each observation add two edges: one for p0 observed at (x1,y1) and one for p1 observed at (x2,y2).
+    # -------------------------------------------------------------------------
+    graph_line_endpoint_vertices = {}  # maps (ml, 'p0'/'p1') -> vertex
+    next_available_id = 1
+    # compute a safe starting id: take max of existing ids + 1
+    existing_ids = [kf.kid * 2 for kf in graph_keyframes] + [p.id * 2 + 1 for p in points if p is not None]
+    if len(existing_ids) > 0:
+        next_available_id = max(existing_ids) + 1
+    else:
+        next_available_id = 1
+
+    if lines is None:
+        lines = []
+
+    for ml in lines:
+        if ml is None or ml.is_bad:
+            Printer.red(f"Skipping bad or None MapLine: {ml}")
+            continue
+
+        # Create vertex for p0
+        v_p0 = g2o.VertexSBAPointXYZ()
+        v_p0.set_id(next_available_id)
+        v_p0.set_estimate(ml.p0.copy())
+        v_p0.set_marginalized(True)
+        v_p0.set_fixed(fixed_points)
+        opt.add_vertex(v_p0)
+        graph_line_endpoint_vertices[(ml, "p0")] = v_p0
+        #Printer.yellow(f"[DEBUG] Added line endpoint vertex p0 for MapLine {ml.id} with id {next_available_id}")
+        next_available_id += 1
+
+        # Create vertex for p1
+        v_p1 = g2o.VertexSBAPointXYZ()
+        v_p1.set_id(next_available_id)
+        v_p1.set_estimate(ml.p1.copy())
+        v_p1.set_marginalized(True)
+        v_p1.set_fixed(fixed_points)
+        opt.add_vertex(v_p1)
+        graph_line_endpoint_vertices[(ml, "p1")] = v_p1
+        #Printer.yellow(f"[DEBUG] Added line endpoint vertex p1 for MapLine {ml.id} with id {next_available_id}")
+        next_available_id += 1
+
+        # For each observation (keyframe, line_idx) add projection edges for endpoints
+        for kf, line_idx in ml.observations.items():
+            if kf not in graph_keyframes:
+                Printer.red(f"KeyFrame {kf.id if hasattr(kf, 'id') else kf} not in graph_keyframes for MapLine {ml.id}")
+                continue
+            # observed 2D segment in that keyframe
+            obs_segment = kf.lines[line_idx]  # expected [x1,y1,x2,y2]
+            if obs_segment is None:
+                Printer.red(f"Observation segment is None for MapLine {ml.id} in KeyFrame {kf.id}")
+                continue
+            u0 = np.asarray([float(obs_segment[0]), float(obs_segment[1])])
+            u1 = np.asarray([float(obs_segment[2]), float(obs_segment[3])])
+
+            # choose invSigma2: approximate using average octave if available, else 1.0
+            try:
+                # try to pick a reasonable octave for the observation: take 0 if not available
+                octave_guess = 0
+                if hasattr(kf, "octaves") and kf.octaves is not None and len(kf.octaves) > 0:
+                    octave_guess = int(np.clip(np.median(kf.octaves), 0, len(inv_level_sigmas2) - 1))
+                invSigma2_line = inv_level_sigmas2[octave_guess]
+            except Exception as e:
+                Printer.red(f"Exception in invSigma2_line for MapLine {ml.id} in KeyFrame {kf.id}: {e}")
+                invSigma2_line = 1.0
+
+            camera = kf.camera
+
+            # endpoint 0 edge
+            edge0 = g2o.EdgeSE3ProjectXYZ()
+            edge0.set_vertex(0, graph_line_endpoint_vertices[(ml, "p0")])
+            edge0.set_vertex(1, graph_keyframes[kf])
+            edge0.set_measurement(u0.tolist())
+            edge0.set_information(eye2 * invSigma2_line)
+            if use_robust_kernel:
+                edge0.set_robust_kernel(g2o.RobustKernelHuber(thHuberMono))
+            edge0.fx = camera.fx
+            edge0.fy = camera.fy
+            edge0.cx = camera.cx
+            edge0.cy = camera.cy
+            opt.add_edge(edge0)
+            graph_edges[edge0] = False
+            num_edges += 1
+            #Printer.yellow(f"[DEBUG] Added edge for MapLine {ml.id} endpoint p0 in KeyFrame {kf.id}")
+
+            # endpoint 1 edge
+            edge1 = g2o.EdgeSE3ProjectXYZ()
+            edge1.set_vertex(0, graph_line_endpoint_vertices[(ml, "p1")])
+            edge1.set_vertex(1, graph_keyframes[kf])
+            edge1.set_measurement(u1.tolist())
+            edge1.set_information(eye2 * invSigma2_line)
+            if use_robust_kernel:
+                edge1.set_robust_kernel(g2o.RobustKernelHuber(thHuberMono))
+            edge1.fx = camera.fx
+            edge1.fy = camera.fy
+            edge1.cx = camera.cx
+            edge1.cy = camera.cy
+            opt.add_edge(edge1)
+            graph_edges[edge1] = False
+            num_edges += 1
+            Printer.yellow(f"[DEBUG] Added edge for MapLine {ml.id} endpoint p1 in KeyFrame {kf.id}")
+    # -------------------
 
     if abort_flag.value:
         return -1, result_dict
@@ -257,8 +363,10 @@ def bundle_adjustment(
     # instead of changing the keyframes and points
     keyframe_updates = None
     point_updates = None
+    line_endpoint_updates = None
+
     if result_dict is not None:
-        keyframe_updates, point_updates = {}, {}
+        keyframe_updates, point_updates, line_endpoint_updates = {}, {}, {}
 
     # put frames back
     if keyframe_updates is not None:
@@ -302,6 +410,27 @@ def bundle_adjustment(
     num_active_edges = num_edges - num_bad_edges
     mean_squared_error = opt.active_chi2() / max(num_active_edges, 1)
 
+    # put line endpoint updates back into MapLine objects
+    if lines:
+        if result_dict is not None:
+            for (ml, endpoint), v in graph_line_endpoint_vertices.items():
+                est = v.estimate()
+                line_endpoint_updates[(ml.id, endpoint)] = np.array(est)
+        else:
+            # update MapLine.p0 and p1 in place (unless fixed_points)
+            if not fixed_points:
+                for ml in lines:
+                    v_p0 = graph_line_endpoint_vertices.get((ml, "p0"), None)
+                    v_p1 = graph_line_endpoint_vertices.get((ml, "p1"), None)
+                    if v_p0 is not None:
+                        ml.p0 = np.array(v_p0.estimate())
+                    if v_p1 is not None:
+                        ml.p1 = np.array(v_p1.estimate())
+                    # recompute derived Plucker representation if you keep it
+                    ml.d = ml.p1 - ml.p0
+                    ml.m = np.cross(ml.p0, ml.d)
+
+
     print(
         f"bundle_adjustment: mean_squared_error: {mean_squared_error}, initial_mean_squared_error: {initial_mean_squared_error}, num_edges: {num_edges},  num_bad_edges: {num_bad_edges} (perc: {num_bad_edges/num_edges*100:.2f}%)"
     )
@@ -309,6 +438,8 @@ def bundle_adjustment(
     if result_dict is not None:
         result_dict["keyframe_updates"] = keyframe_updates
         result_dict["point_updates"] = point_updates
+        if line_endpoint_updates is not None:
+            result_dict["line_endpoint_updates"] = line_endpoint_updates
 
     return mean_squared_error, result_dict
 

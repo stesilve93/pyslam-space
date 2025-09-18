@@ -1306,8 +1306,22 @@ class Tracking:
                 )
                 # new_pts_count = self.map.add_stereo_points(initializer_output.pts, None, f_cur, kf_cur, np.arange(len(initializer_output.pts), dtype=np.int), img)
 
+                # Printer.green(
+                #     f"map: initialized with kfs {kf_ref.id}, {kf_cur.id} and {new_pts_count} new map points"
+                # )
+
+                new_lines_count, _, _ = self.map.add_lines(
+                    initializer_output.lines_3d,
+                    kf_cur,
+                    kf_ref,
+                    initializer_output.idxs_cur_lines,
+                    initializer_output.idxs_ref_lines,
+                    img,
+                    do_check=False,
+                )
                 Printer.green(
-                    f"map: initialized with kfs {kf_ref.id}, {kf_cur.id} and {new_pts_count} new map points"
+                    f"map: initialized with kfs {kf_ref.id}, {kf_cur.id}, "
+                    f"{new_pts_count} new map points and {new_lines_count} new map lines"
                 )
 
                 # update covisibility graph connections
